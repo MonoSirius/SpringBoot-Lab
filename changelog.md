@@ -20,7 +20,8 @@ mapstruct在生成转换代码时找不到属性，生成转换代码时lombok�
 [解决参考](https://blog.csdn.net/weixin_42272869/article/details/122337269)
 
 ## lab02 SpringMVC
-### 使用Junit5进行单元测试
+### [使用Junit5进行单元测试]()
+
 集成测试: 
 @ExtendWith是@RunWith的替代
 ```java
@@ -83,7 +84,7 @@ public class UserControllerTest {
 
 
 
-### 不建议使用基于字段注入
+### [不建议使用基于字段注入]()
 
 推荐的方法是使用基于构造函数和基于setter的依赖注入。 
 
@@ -91,3 +92,130 @@ public class UserControllerTest {
 - 对于可选的依赖项，建议使用基于sett的注入。
 
 [为什么不建议使用基于字段注入?](https://mp.weixin.qq.com/s/nPd1Gk-k1b7-fv19PML1Cw)
+
+### [统一返回结果]() 
+```java
+/**
+ * @author MonoSirius
+ * @date 2023/5/31
+ */
+public class CommonResult<T> implements Serializable {
+    public static final Integer CODE_OK = 200;
+    /**
+     * 错误码
+     */
+    private Integer code;
+
+    /**
+     * 错误提示
+     */
+    private String msg;
+
+    /**
+     * 数据
+     */
+    private T data;
+
+    /**
+     * 对result进行 泛型转换
+     * @param result 源泛型result
+     * @return 目标泛型result
+     * @param <T> 目标泛型
+     */
+    public static <T> CommonResult<T> fail(CommonResult<?> result) {
+        return fail(result.getCode(), result.getMsg());
+    }
+
+    public static <T> CommonResult<T> ok(T data) {
+        CommonResult<T> result = new CommonResult<>();
+        result.setCode(CODE_OK);
+        result.setData(data);
+        result.setMsg("");
+        return result;
+    }
+
+    public static <T> CommonResult<T> fail(Integer code, String msg) {
+        Assert.isTrue(!CODE_OK.equals(code), "code必须是错误的!");
+        CommonResult<T> result = new CommonResult<>();
+        result.setCode(code);
+        result.setMsg(msg);
+        return result;
+    }
+
+    @JsonIgnore
+    public boolean isOk() {
+        return CODE_OK.equals(code);
+    }
+
+    @JsonIgnore // 避免Jackson序列化给前端
+    public boolean isFail() {
+        return !isOk();
+    }
+
+    public Integer getCode() {
+        return code;
+    }
+
+    public void setCode(Integer code) {
+        this.code = code;
+    }
+
+    public String getMsg() {
+        return msg;
+    }
+
+    public void setMsg(String msg) {
+        this.msg = msg;
+    }
+
+    public T getData() {
+        return data;
+    }
+
+    public void setData(T data) {
+        this.data = data;
+    }
+}
+```
+
+### [全局统一异常]()
+参考: https://www.kancloud.cn/onebase/ob/484204
+
+一共 10 位，分成四段
+
+第一段，1 位，类型
+*    1 - 业务级别异常
+*    2 - 系统级别异常
+
+第二段，3 位，系统类型 
+* 001 - 用户系统 
+* 002 - 商品系统 
+* 003 - 订单系统 
+* 004 - 支付系统 
+* 005 - 优惠劵系统
+
+第三段，3 位，模块
+
+不限制规则。
+
+一般建议，每个系统里面，可能有多个模块，可以再去做分段。以用户系统为例子： 
+* 001 - OAuth2 模块
+* 002 - User 模块
+* 003 - MobileCode 模块
+
+第四段，3 位，错误码
+
+不限制规则。
+
+一般建议，每个模块自增。
+
+### [Servlet、Filter、Listener]()
+
+在 Servlet3.0 的新特性里，提供了三个注解，方便配置 Servlet、Filter、Listener 。
+- `@WebServlet`
+- `@WebFilter`
+- `@WebListener` 
+
+> 💡而在 SpringBoot 中，我们仅需要在 Application 类上，添加 @ServletComponentScan 注解，
+> 开启对 @WebServlet、@WebFilter、@WebListener 注解的扫描。
+> 不过要注意，当且仅当使用内嵌的 Web Server 才会生效。
