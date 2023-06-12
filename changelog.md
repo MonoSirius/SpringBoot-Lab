@@ -243,3 +243,141 @@ public class CommonResult<T> implements Serializable {
 > - 1）编写自定义约束的注解；
 > - 2）编写自定义的校验器 ConstraintValidator。
 
+## [lab04 RocketMQ]()
+
+### [启动RocketMQ]()
+在启动Broker时报错: `java.lang.IllegalAccessError: class org.apache.rocketmq.common.UtilAll (in unnamed module @0x2c8b1039) cannot access class sun.nio.ch.DirectBuffer (in module java.base) 
+because module java.base does not export sun.nio.ch to unnamed module @0x2c8b1039`
+
+💡解决:  
+`vim bin/runbroker.sh`  
+添加: `$JAVA ${JAVA_OPT} --add-exports=java.base/sun.nio.ch=ALL-UNNAMED $@`
+
+
+
+### [@RocketMQMessageListener]() 注解
+
+💡常用属性如下:
+```java
+/**
+ * Consumer 所属消费者分组
+ *
+ * Consumers of the same role is required to have exactly same subscriptions and consumerGroup to correctly achieve
+ * load balance. It's required and needs to be globally unique.
+ *
+ * See <a href="http://rocketmq.apache.org/docs/core-concept/">here</a> for further discussion.
+ */
+String consumerGroup();
+
+/**
+ * 消费的 Topic
+ *
+ * Topic name.
+ */
+String topic();
+
+/**
+ * 选择器类型。默认基于 Message 的 Tag 选择。
+ *
+ * Control how to selector message.
+ *
+ * @see SelectorType
+ */
+SelectorType selectorType() default SelectorType.TAG;
+/**
+ * 选择器的表达式。
+ * 设置为 * 时，表示全部。
+ *
+ * 如果使用 SelectorType.TAG 类型，则设置消费 Message 的具体 Tag 。
+ * 如果使用 SelectorType.SQL92 类型，可见 https://rocketmq.apache.org/rocketmq/filter-messages-by-sql92-in-rocketmq/ 文档
+ *
+ * Control which message can be select. Grammar please see {@link SelectorType#TAG} and {@link SelectorType#SQL92}
+ */
+String selectorExpression() default "*";
+
+/**
+ * 消费模式。可选择并发消费，还是顺序消费。
+ *
+ * Control consume mode, you can choice receive message concurrently or orderly.
+ */
+ConsumeMode consumeMode() default ConsumeMode.CONCURRENTLY;
+
+/**
+ * 消息模型。可选择是集群消费，还是广播消费。
+ *
+ * Control message mode, if you want all subscribers receive message all message, broadcasting is a good choice.
+ */
+MessageModel messageModel() default MessageModel.CLUSTERING;
+
+/**
+ * 消费的线程池的最大线程数
+ *
+ * Max consumer thread number.
+ */
+int consumeThreadMax() default 64;
+
+/**
+ * 消费单条消息的超时时间
+ *
+ * Max consumer timeout, default 30s.
+ */
+long consumeTimeout() default 30000L;
+```
+
+### [顺序消息]()
+
+在 RocketMQ 中，Producer 可以根据定义 MessageQueueSelector 消息队列选择策略，选择 Topic 下的队列。目前提供三种策略：
+
+- SelectMessageQueueByHash ，基于 hashKey 的哈希值取余，选择对应的队列。  
+- SelectMessageQueueByRandom ，基于随机的策略，选择队列。  
+- SelectMessageQueueByMachineRoom ，😈 有点看不懂，目前是空的实现，暂时无视吧。  
+未使用 MessageQueueSelector 时，采用轮询的策略，选择队列。  
+
+RocketMQTemplate 在发送顺序消息时，默认采用 SelectMessageQueueByHash 策略。如此，相同的 hashKey 的消息，就可以发送到相同的 Topic 的对应队列中。
+
+> 使用订单号作为hashkey时,同一订单的消息就会发送到同一个队列中
+
+
+### [事务消息]()
+
+```java
+// Demo07Producer.java
+
+@RocketMQTransactionListener(txProducerGroup = TX_PRODUCER_GROUP)
+public class TransactionListenerImpl implements RocketMQLocalTransactionListener {
+
+    private Logger logger = LoggerFactory.getLogger(getClass());
+
+    @Override
+    public RocketMQLocalTransactionState executeLocalTransaction(Message msg, Object arg) {
+        // ... local transaction process, return rollback, commit or unknown
+        logger.info("[executeLocalTransaction][执行本地事务，消息：{} arg：{}]", msg, arg);
+        return RocketMQLocalTransactionState.UNKNOWN;
+    }
+
+    @Override
+    public RocketMQLocalTransactionState checkLocalTransaction(Message msg) {
+        // ... check transaction status and return rollback, commit or unknown
+        logger.info("[checkLocalTransaction][回查消息：{}]", msg);
+        return RocketMQLocalTransactionState.COMMIT;
+    }
+
+}
+```
+
+- 实现 #executeLocalTransaction(...) 方法，实现执行本地事务。
+  - 此时消息已经发送,但是会根据该方法的返回结果决定提交还是回滚.
+  
+- 实现 #checkLocalTransaction(...) 方法，检查本地事务。
+  - 在事务消息长事件未被提交或回滚时，RocketMQ 会回查事务消息对应的生产者分组下的 Producer ，获得事务消息的状态。此时，该方法就会被调用。
+
+事务回查:  
+- 通过 msg 消息，获得某个业务上的标识或者编号，然后去数据库中查询业务记录，从而判断该事务消息的状态是提交还是回滚。
+- 记录 msg 的事务编号，与事务状态到数据库中。
+  - 第一步, 先存储一条id为msg编号的事务和其状态到数据库中
+  - 第二步, 调用带有事务的业务 Service 的方法。在该 Service 方法中，在逻辑都执行成功的情况下，更新 id 为 msg 的事务编号，状态变更为 RocketMQLocalTransactionState.COMMIT 。这样，我们就可以伴随这个事务的提交，更新 id 为 msg 的事务编号的记录的状为 RocketMQLocalTransactionState.COMMIT
+  - 第三步, 我们在 #executeLocalTransaction(...) 方法中，就可以通过查找数据库，id 为 msg 的事务编号的记录的状态，然后返回
+
+> tip:  
+> 要以 try-catch 的方式，调用业务 Service 的方法。如此，如果发生异常，回滚事务的时候，可以在 catch 中，
+> 更新 id 为 msg 的事务编号的记录的状态为 RocketMQLocalTransactionState.ROLLBACK
